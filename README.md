@@ -16,8 +16,8 @@ BBEdit already colours LaTeX syntax with its built-in TeX language module, so no
 ```sh
 brew install --cask mactex-no-gui   # if you don't have TeX yet (any TeX Live works)
 brew install poppler                # turns PDF pages into images for the preview
-git clone https://github.com/garrekstemo/latex-bbedit-preview ~/Developer/latex-bbedit-preview
-bash ~/Developer/latex-bbedit-preview/install.sh
+git clone https://github.com/garrekstemo/bbedit-latex-preview ~/Developer/bbedit-latex-preview
+bash ~/Developer/bbedit-latex-preview/install.sh
 ```
 
 The installer links BBEdit to the files in the clone rather than copying them, so keep the clone where it is. To update later, `git pull` in the clone; there's no reinstall step.
@@ -31,7 +31,7 @@ To remove everything: `bash install.sh --uninstall`.
 BBEdit pipes the document text to the preview filter on stdin and shows the HTML the filter prints. The filter runs `latexmk` on the buffer in a temporary folder (so nothing is written next to your file), converts each PDF page to SVG with poppler's `pdftocairo`, and puts the pages into the HTML as images.
 
 * **Errors don't blank the preview.** When the document fails to compile mid-edit, the last good render stays on screen, dimmed, under a banner with LaTeX's error message and line number (just the error, not the whole log). Warnings, such as undefined references, are collected in a yellow bar you can click open.
-* **Cross-references and bibliographies work.** `latexmk` runs BibTeX or Biber and reruns LaTeX as needed. Aux files are kept between refreshes in `~/Library/Caches/latex-bbedit-preview`, so a typical refresh is a single LaTeX run (about a second for a short article).
+* **Cross-references and bibliographies work.** `latexmk` runs BibTeX or Biber and reruns LaTeX as needed. Aux files are kept between refreshes in `~/Library/Caches/bbedit-latex-preview`, so a typical refresh is a single LaTeX run (about a second for a short article).
 * **Multi-file documents work.** When you edit a chapter, the preview builds the whole document with your unsaved chapter swapped in. The main file is found from a `% !TEX root = ../main.tex` line at the top of the chapter (the TeXShop / TeXstudio / VS Code convention), or, without one, from a `.tex` file with `\documentclass` in the same or parent folder that `\input`s or `\include`s the chapter.
 * **Relative paths work.** `\input`, `\includegraphics` and `\bibliography` resolve against the document's folder. BBEdit doesn't tell preview filters which file they're rendering, and it can't answer AppleScript while a filter runs, so a small background helper (`lib/bbedit-docwatch.sh`) asks BBEdit once a second which files are open. The filter picks the open `.tex` file whose saved text is closest to what it was given. The helper starts with the first preview and exits when BBEdit quits. The first time, macOS asks whether it may control BBEdit; allow it.
 * **Pick the engine per document.** The default engine is LuaLaTeX, run through latexmk. `% !TEX program = pdflatex` (or `xelatex`) in the first lines picks another engine for that document, and `LATEX_ENGINE` in the config file changes the default.
@@ -52,7 +52,7 @@ LaTeX is slower than Typst, so a long thesis (a few seconds per compile) will ma
 
 ## Settings (optional)
 
-Create `~/.config/latex-bbedit-preview/config`. It's a shell file, for example:
+Create `~/.config/bbedit-latex-preview/config`. It's a shell file, for example:
 
 ```sh
 LATEX_ENGINE=pdflatex          # default engine (lualatex if unset) when the document doesn't say
@@ -72,7 +72,7 @@ PDF_VIEWER=Skim
 * **"File not found" for an image or `\input` that exists, or a chapter says "Nothing to preview".** The filter doesn't know where the document is saved yet. The background helper reports within a second of the first preview after BBEdit starts, so type a character to refresh. A document that has never been saved has no folder, so relative paths only work after the first save. If it persists, check that System Settings › Privacy & Security › Automation lets the helper control BBEdit.
 * **"lualatex not found" with MacTeX installed.** The filter looks in `/Library/TeX/texbin`. If your TeX is elsewhere, add `PATH="$PATH:/your/tex/bin"` to the config file.
 * **A chapter's unsaved edits don't show.** The buffer is swapped in through `TEXINPUTS`, which works for `\input{chapters/intro}` but not for paths that start with `./` (`\input{./chapters/intro}`). Drop the `./`.
-* **A stale reference or citation after a big change.** Clear the cache: `rm -r ~/Library/Caches/latex-bbedit-preview`.
+* **A stale reference or citation after a big change.** Clear the cache: `rm -r ~/Library/Caches/bbedit-latex-preview`.
 
 ## Tested
 

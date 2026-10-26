@@ -9,11 +9,11 @@
 # instead. Use this when you want the real PDF (with SyncTeX), or for large
 # documents where the as-you-type preview filter is too slow.
 #
-# Set PDF_VIEWER in ~/.config/latex-bbedit-preview/config to pick the app
+# Set PDF_VIEWER in ~/.config/bbedit-latex-preview/config to pick the app
 # (Skim reloads changed PDFs automatically; set its "Check for file
 # changes" preference).
 
-CONFIG="$HOME/.config/latex-bbedit-preview/config"
+CONFIG="$HOME/.config/bbedit-latex-preview/config"
 [ -f "$CONFIG" ] && . "$CONFIG"
 
 PATH="$PATH:/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:$HOME/bin"
@@ -51,7 +51,7 @@ case "$(magic program "$src" | tr '[:upper:]' '[:lower:]')" in
        esac ;;
 esac
 
-state_dir="$HOME/Library/Caches/latex-bbedit-preview/watch"
+state_dir="$HOME/Library/Caches/bbedit-latex-preview/watch"
 mkdir -p "$state_dir"
 key=$(printf '%s' "$src" | cksum | cut -d' ' -f1)
 pid_file="$state_dir/$key.pid"
