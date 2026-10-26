@@ -22,7 +22,7 @@
 # includes it. The main file is read from disk, and the buffer you are
 # editing is swapped in for its saved copy.
 #
-# Optional settings live in ~/.config/latex-bbedit-preview/config, which
+# Optional settings live in ~/.config/bbedit-latex-preview/config, which
 # is sourced as a shell file. Recognised variables:
 #   LATEX_ENGINE          lualatex (default), pdflatex or xelatex. A
 #                         "% !TEX program = xelatex" line in the document wins.
@@ -34,7 +34,7 @@
 #                         long documents)
 #   LATEX_PREVIEW_DPI     resolution for png pages (default 144)
 
-CONFIG="$HOME/.config/latex-bbedit-preview/config"
+CONFIG="$HOME/.config/bbedit-latex-preview/config"
 [ -f "$CONFIG" ] && . "$CONFIG"
 
 # BBEdit's filter environment can have a short PATH, so also look in the
@@ -47,7 +47,7 @@ trap 'rm -rf "$work"' EXIT
 
 cat > "$work/buffer.tex"
 
-cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/latex-bbedit-preview"
+cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/bbedit-latex-preview"
 mkdir -p "$cache_root"
 
 # Relative \input, \includegraphics and chapter previews need the

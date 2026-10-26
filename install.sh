@@ -14,7 +14,7 @@ support="$HOME/Library/Application Support/BBEdit"
 filter="$support/Preview Filters/LaTeX Preview.sh"
 default_filter="$support/Preview Filters/DefaultFilter_TeX"
 script="$support/Scripts/LaTeX Watch PDF.sh"
-cache="$HOME/Library/Caches/latex-bbedit-preview"
+cache="$HOME/Library/Caches/bbedit-latex-preview"
 
 if [ "$1" = "--uninstall" ]; then
     rm -f "$filter" "$script"
