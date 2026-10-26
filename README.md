@@ -34,7 +34,7 @@ BBEdit pipes the document text to the preview filter on stdin and shows the HTML
 * **Cross-references and bibliographies work.** `latexmk` runs BibTeX or Biber and reruns LaTeX as needed. Aux files are kept between refreshes in `~/Library/Caches/latex-bbedit-preview`, so a typical refresh is a single LaTeX run (about a second for a short article).
 * **Multi-file documents work.** When you edit a chapter, the preview builds the whole document with your unsaved chapter swapped in. The main file is found from a `% !TEX root = ../main.tex` line at the top of the chapter (the TeXShop / TeXstudio / VS Code convention), or, without one, from a `.tex` file with `\documentclass` in the same or parent folder that `\input`s or `\include`s the chapter.
 * **Relative paths work.** `\input`, `\includegraphics` and `\bibliography` resolve against the document's folder. BBEdit doesn't tell preview filters which file they're rendering, and it can't answer AppleScript while a filter runs, so a small background helper (`lib/bbedit-docwatch.sh`) asks BBEdit once a second which files are open. The filter picks the open `.tex` file whose saved text is closest to what it was given. The helper starts with the first preview and exits when BBEdit quits. The first time, macOS asks whether it may control BBEdit; allow it.
-* **Pick the engine per document.** `% !TEX program = xelatex` (or `lualatex`) in the first lines selects the engine; the default is pdfLaTeX.
+* **Pick the engine per document.** The default engine is LuaLaTeX, run through latexmk. `% !TEX program = pdflatex` (or `xelatex`) in the first lines picks another engine for that document, and `LATEX_ENGINE` in the config file changes the default.
 * **The document can tell it's being previewed.** `\bbeditpreview` is defined only in the preview, so `\ifdefined\bbeditpreview … \fi` can add a draft mark or skip slow parts.
 
 Try it with `examples/demo.tex` and `examples/chapters/intro.tex`.
@@ -55,7 +55,7 @@ LaTeX is slower than Typst, so a long thesis (a few seconds per compile) will ma
 Create `~/.config/latex-bbedit-preview/config`. It's a shell file, for example:
 
 ```sh
-LATEX_ENGINE=lualatex          # default engine when the document doesn't say
+LATEX_ENGINE=pdflatex          # default engine (lualatex if unset) when the document doesn't say
 LATEX_PREVIEW_WIDTH="100%"     # page size: 100% fits the window (default),
                                # "700px" fixed, "150%" zoom past the window
 LATEX_PREVIEW_FORMAT=svg       # svg (sharp, default) or png (faster)
@@ -70,10 +70,10 @@ PDF_VIEWER=Skim
 
 * **The preview shows plain text or HTML-escaped source.** BBEdit didn't apply the filter. Pick **LaTeX Preview** from the filter menu in the preview window's navigation bar; BBEdit remembers the choice for each document.
 * **"File not found" for an image or `\input` that exists, or a chapter says "Nothing to preview".** The filter doesn't know where the document is saved yet. The background helper reports within a second of the first preview after BBEdit starts, so type a character to refresh. A document that has never been saved has no folder, so relative paths only work after the first save. If it persists, check that System Settings › Privacy & Security › Automation lets the helper control BBEdit.
-* **"pdflatex not found" with MacTeX installed.** The filter looks in `/Library/TeX/texbin`. If your TeX is elsewhere, add `PATH="$PATH:/your/tex/bin"` to the config file.
+* **"lualatex not found" with MacTeX installed.** The filter looks in `/Library/TeX/texbin`. If your TeX is elsewhere, add `PATH="$PATH:/your/tex/bin"` to the config file.
 * **A chapter's unsaved edits don't show.** The buffer is swapped in through `TEXINPUTS`, which works for `\input{chapters/intro}` but not for paths that start with `./` (`\input{./chapters/intro}`). Drop the `./`.
 * **A stale reference or citation after a big change.** Clear the cache: `rm -r ~/Library/Caches/latex-bbedit-preview`.
 
 ## Tested
 
-The filter, installer and watch script were tested on Linux with TeX Live 2023 (pdfLaTeX, XeLaTeX, latexmk 4.83, BibTeX) and poppler, with BBEdit's behaviour simulated (buffer on stdin, working folder `/`, the helper's list of open files written by hand). Tested cases: a single file with equations, references and a bibliography; editing a chapter with and without a `% !TEX root` line; errors with and without a previous good render; XeLaTeX with a folder name containing a space; the no-latexmk path; PNG output. The background helper is the same one the Typst preview uses, which was verified in BBEdit on a Mac. The LaTeX filter itself has not yet run inside BBEdit.
+The filter, installer and watch script were tested on Linux with TeX Live 2023 (LuaLaTeX, pdfLaTeX, XeLaTeX, latexmk 4.83, BibTeX) and poppler, with BBEdit's behaviour simulated (buffer on stdin, working folder `/`, the helper's list of open files written by hand). Tested cases: a single file with equations, references and a bibliography; editing a chapter with and without a `% !TEX root` line; errors with and without a previous good render; XeLaTeX with a folder name containing a space; the no-latexmk path; PNG output. The background helper is the same one the Typst preview uses, which was verified in BBEdit on a Mac. The LaTeX filter itself has not yet run inside BBEdit.

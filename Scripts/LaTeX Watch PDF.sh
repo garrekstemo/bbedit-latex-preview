@@ -46,8 +46,8 @@ case "$(magic program "$src" | tr '[:upper:]' '[:lower:]')" in
     xelatex) mode=-xelatex ;;
     lualatex) mode=-lualatex ;;
     pdflatex) mode=-pdf ;;
-    *) case "${LATEX_ENGINE:-pdflatex}" in
-           xelatex) mode=-xelatex ;; lualatex) mode=-lualatex ;; *) mode=-pdf ;;
+    *) case "${LATEX_ENGINE:-lualatex}" in
+           xelatex) mode=-xelatex ;; pdflatex) mode=-pdf ;; *) mode=-lualatex ;;
        esac ;;
 esac
 
