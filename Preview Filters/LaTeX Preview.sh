@@ -24,7 +24,7 @@
 #
 # Optional settings live in ~/.config/latex-bbedit-preview/config, which
 # is sourced as a shell file. Recognised variables:
-#   LATEX_ENGINE          pdflatex (default), xelatex or lualatex. A
+#   LATEX_ENGINE          lualatex (default), pdflatex or xelatex. A
 #                         "% !TEX program = xelatex" line in the document wins.
 #   LATEX_USE_LATEXMK     "no" to run the engine once instead of latexmk
 #   LATEX_PREVIEW_ARGS    extra arguments for latexmk or the engine (word-split)
@@ -226,10 +226,10 @@ add a line like this near the top so the preview builds the main file:
 fi
 mkdir -p "$work/shadow"
 
-engine=$(printf '%s' "${engine_source:-${LATEX_ENGINE:-pdflatex}}" | tr '[:upper:]' '[:lower:]')
+engine=$(printf '%s' "${engine_source:-${LATEX_ENGINE:-lualatex}}" | tr '[:upper:]' '[:lower:]')
 case "$engine" in
     pdflatex|xelatex|lualatex) ;;
-    *) engine=pdflatex ;;
+    *) engine=lualatex ;;
 esac
 command -v "$engine" >/dev/null ||
     fail_page "$engine not found" "Install MacTeX (brew install --cask mactex-no-gui), or set PATH in
