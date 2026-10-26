@@ -28,7 +28,7 @@ if [ "$1" = "--uninstall" ]; then
 fi
 
 mkdir -p "$support/Preview Filters" "$support/Scripts"
-chmod +x "$here/Preview Filters/LaTeX Preview.sh" "$here/Scripts/LaTeX Watch PDF.sh"
+chmod +x "$here/Preview Filters/LaTeX Preview.sh" "$here/Scripts/LaTeX Watch PDF.sh" "$here/lib/bbedit-docwatch.sh"
 ln -sfn "$here/Preview Filters/LaTeX Preview.sh" "$filter"
 ln -sfn "$here/Scripts/LaTeX Watch PDF.sh" "$script"
 # BBEdit applies "DefaultFilter_<language>" automatically to documents in

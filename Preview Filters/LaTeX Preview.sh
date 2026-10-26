@@ -47,13 +47,60 @@ trap 'rm -rf "$work"' EXIT
 
 cat > "$work/buffer.tex"
 
+cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/latex-bbedit-preview"
+mkdir -p "$cache_root"
+
+# Relative \input, \includegraphics and chapter previews need the
+# document's folder. BBEdit doesn't tell preview filters which file they're
+# rendering, and it can't answer AppleScript while a filter runs. So a
+# background helper (lib/bbedit-docwatch.sh) keeps a list of BBEdit's open
+# files, and we pick the .tex file whose saved text is closest to the text
+# we were given.
+self="$0"
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case "$link" in
+        /*) self="$link" ;;
+        *) self="$(dirname "$self")/$link" ;;
+    esac
+done
+docwatch="$(cd "$(dirname "$self")/.." && pwd)/lib/bbedit-docwatch.sh"
+open_docs="$cache_root/open-documents.txt"
+docwatch_pid="$cache_root/docwatch.pid"
+if [ -x "$docwatch" ] && command -v osascript >/dev/null &&
+   ! { [ -f "$docwatch_pid" ] && kill -0 "$(cat "$docwatch_pid")" 2>/dev/null; }; then
+    nohup "$docwatch" "$open_docs" "$docwatch_pid" </dev/null >/dev/null 2>&1 &
+fi
+
 doc_path="${BB_DOC_PATH:-}"
+if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
+    best_diff=""
+    while IFS= read -r candidate; do
+        case "$candidate" in *.tex) ;; *) continue ;; esac
+        [ -f "$candidate" ] || continue
+        if cmp -s "$work/buffer.tex" "$candidate"; then
+            doc_path="$candidate"
+            break
+        fi
+        # Skip files that share less than half their lines with the text,
+        # so an unsaved new document doesn't borrow another file's folder.
+        changed=$(diff "$work/buffer.tex" "$candidate" | grep -c '^[<>]')
+        total=$(cat "$work/buffer.tex" "$candidate" | wc -l)
+        [ $((changed * 2)) -le "$total" ] || continue
+        if [ -z "$best_diff" ] || [ "$changed" -lt "$best_diff" ]; then
+            best_diff="$changed"
+            doc_path="$candidate"
+        fi
+    done < "$open_docs"
+fi
 if [ -n "$doc_path" ] && [ -d "$(dirname "$doc_path")" ]; then
     doc_dir=$(cd "$(dirname "$doc_path")" && pwd)
     doc_name=$(basename "$doc_path")
 else
+    # BBEdit runs filters in /, so an unsaved document builds in the
+    # temporary folder rather than scanning the whole disk.
     doc_path=""
-    doc_dir="$PWD"
+    doc_dir="$work"
     doc_name="untitled.tex"
 fi
 
@@ -166,7 +213,9 @@ else
     cp "$work/buffer.tex" "$work/$job.tex"
     source_file="$work/$job.tex"
     engine_source=$(magic program "$work/buffer.tex")
-    cache_name="${doc_path:-untitled}"
+    # With no known path there is nothing to tell documents apart by, so
+    # don't cache: a shared entry would show another file's pages.
+    cache_name="$doc_path"
     if ! grep -Eq '\\documentclass|\\begin\{document\}|\\bye' "$work/buffer.tex"; then
         fail_page "Nothing to preview" \
 "This file has no \\documentclass. If it is part of a larger document,
@@ -188,10 +237,14 @@ $CONFIG"
 
 # --- Cache ----------------------------------------------------------------
 
-cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/latex-bbedit-preview"
-cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
-build_cache="$cache_root/$cache_key"
-last_good="$cache_root/$cache_key.html"
+if [ -n "$cache_name" ]; then
+    cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
+    build_cache="$cache_root/$cache_key"
+    last_good="$cache_root/$cache_key.html"
+else
+    build_cache="$work/.no-cache"
+    last_good="$work/.no-cache.html"
+fi
 mkdir -p "$build_cache"
 
 # Bring back the aux files from the previous refresh.
