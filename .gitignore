@@ -1,0 +1,10 @@
+.DS_Store
+examples/*.aux
+examples/*.log
+examples/*.pdf
+examples/*.fls
+examples/*.fdb_latexmk
+examples/*.synctex.gz
+examples/*.bbl
+examples/*.blg
+examples/*.out

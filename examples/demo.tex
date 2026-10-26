@@ -1,0 +1,25 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{LaTeX preview demo}
+\author{BBEdit}
+
+\begin{document}
+\maketitle
+\ifdefined\bbeditpreview
+  \begin{center}\fbox{Draft preview}\end{center}
+\fi
+
+\section{Equations}\label{sec:eq}
+The Gaussian integral, Eq.~\eqref{eq:gauss}, appears in Section~\ref{sec:eq}:
+\begin{equation}
+  \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}. \label{eq:gauss}
+\end{equation}
+See Knuth~\cite{knuth84} for typesetting.
+
+\input{chapters/intro}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}
