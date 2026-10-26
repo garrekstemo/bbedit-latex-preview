@@ -48,6 +48,14 @@ trap 'rm -rf "$work"' EXIT
 cat > "$work/buffer.tex"
 
 doc_path="${BB_DOC_PATH:-}"
+# BBEdit doesn't always set BB_DOC_PATH for preview filters. The front text
+# document is the one being edited, so ask BBEdit for its file instead. An
+# unsaved document has no file, and the request fails quietly.
+if [ -z "$doc_path" ] && command -v osascript >/dev/null; then
+    doc_path=$(osascript -e 'with timeout of 2 seconds' \
+        -e 'tell application "BBEdit" to get POSIX path of (file of text document 1 as alias)' \
+        -e 'end timeout' 2>/dev/null)
+fi
 if [ -n "$doc_path" ] && [ -d "$(dirname "$doc_path")" ]; then
     doc_dir=$(cd "$(dirname "$doc_path")" && pwd)
     doc_name=$(basename "$doc_path")
@@ -166,7 +174,9 @@ else
     cp "$work/buffer.tex" "$work/$job.tex"
     source_file="$work/$job.tex"
     engine_source=$(magic program "$work/buffer.tex")
-    cache_name="${doc_path:-untitled}"
+    # With no known path there is nothing to tell documents apart by, so
+    # don't cache: a shared entry would show another file's pages.
+    cache_name="$doc_path"
     if ! grep -Eq '\\documentclass|\\begin\{document\}|\\bye' "$work/buffer.tex"; then
         fail_page "Nothing to preview" \
 "This file has no \\documentclass. If it is part of a larger document,
@@ -188,10 +198,15 @@ $CONFIG"
 
 # --- Cache ----------------------------------------------------------------
 
-cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/latex-bbedit-preview"
-cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
-build_cache="$cache_root/$cache_key"
-last_good="$cache_root/$cache_key.html"
+if [ -n "$cache_name" ]; then
+    cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/latex-bbedit-preview"
+    cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
+    build_cache="$cache_root/$cache_key"
+    last_good="$cache_root/$cache_key.html"
+else
+    build_cache="$work/.no-cache"
+    last_good="$work/.no-cache.html"
+fi
 mkdir -p "$build_cache"
 
 # Bring back the aux files from the previous refresh.

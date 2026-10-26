@@ -69,7 +69,7 @@ PDF_VIEWER=Skim
 ## Troubleshooting
 
 * **The preview shows plain text or HTML-escaped source.** BBEdit didn't apply the filter. Pick **LaTeX Preview** from the filter menu in the preview window's navigation bar; BBEdit remembers the choice for each document.
-* **"File not found" for an image or `\input` that exists, or a chapter says "Nothing to preview".** Your BBEdit didn't pass the document path to the filter, so paths resolve against BBEdit's working directory. Please report this. A fix is to read the path through AppleScript.
+* **"File not found" for an image or `\input` that exists, or a chapter says "Nothing to preview".** The filter couldn't learn where the document is saved, so paths resolve against BBEdit's working directory. BBEdit doesn't always pass the path to preview filters, so the filter asks BBEdit for it over AppleScript. The first time, macOS asks whether BBEdit may control BBEdit; allow it (System Settings › Privacy & Security › Automation). Unsaved documents have no folder, so relative paths only work after the first save.
 * **"pdflatex not found" with MacTeX installed.** The filter looks in `/Library/TeX/texbin`. If your TeX is elsewhere, add `PATH="$PATH:/your/tex/bin"` to the config file.
 * **A chapter's unsaved edits don't show.** The buffer is swapped in through `TEXINPUTS`, which works for `\input{chapters/intro}` but not for paths that start with `./` (`\input{./chapters/intro}`). Drop the `./`.
 * **A stale reference or citation after a big change.** Clear the cache: `rm -r ~/Library/Caches/latex-bbedit-preview`.
