@@ -72,14 +72,15 @@ if [ -x "$docwatch" ] && command -v osascript >/dev/null &&
     nohup "$docwatch" "$open_docs" "$docwatch_pid" </dev/null >/dev/null 2>&1 &
 fi
 
-doc_path="${BB_DOC_PATH:-}"
-if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
-    best_diff=""
+# closest_file < list of paths: prints the .tex file whose text is closest
+# to the buffer, or nothing.
+closest_file() {
+    best="" best_diff=""
     while IFS= read -r candidate; do
         case "$candidate" in *.tex) ;; *) continue ;; esac
         [ -f "$candidate" ] || continue
         if cmp -s "$work/buffer.tex" "$candidate"; then
-            doc_path="$candidate"
+            best="$candidate"
             break
         fi
         # Skip files that share less than half their lines with the text,
@@ -89,9 +90,32 @@ if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
         [ $((changed * 2)) -le "$total" ] || continue
         if [ -z "$best_diff" ] || [ "$changed" -lt "$best_diff" ]; then
             best_diff="$changed"
-            doc_path="$candidate"
+            best="$candidate"
         fi
-    done < "$open_docs"
+    done
+    printf '%s' "$best"
+}
+
+doc_path="${BB_DOC_PATH:-}"
+if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
+    doc_path=$(closest_file < "$open_docs")
+fi
+# The helper's list lags a second or more behind BBEdit, and BBEdit can't
+# answer it while a filter runs, so a document that was just opened (or
+# reopened with its preview at launch) isn't on it yet. Ask Spotlight for
+# saved .tex files that contain the buffer's most common long words
+# instead (common words, so a word typed since the last save doesn't
+# rule the saved copy out).
+if [ -z "$doc_path" ] && command -v mdfind >/dev/null; then
+    words=$(sed -e 's/%.*//' -e 's/\\[[:alpha:]]*//g' "$work/buffer.tex" | tr -cs '[:alpha:]' '\n' |
+        awk 'length >= 7 { n[tolower($0)]++ } END { for (w in n) print n[w], w }' |
+        sort -k1,1rn -k2 | head -n 4 | cut -d' ' -f2)
+    if [ -n "$words" ]; then
+        query='kMDItemFSName == "*.tex"c'
+        for w in $words; do query="$query && kMDItemTextContent == \"$w\"cd"; done
+        doc_path=$(mdfind -onlyin "$HOME" "$query" 2>/dev/null |
+            grep -v "^$HOME/Library/" | head -n 20 | closest_file)
+    fi
 fi
 if [ -n "$doc_path" ] && [ -d "$(dirname "$doc_path")" ]; then
     doc_dir=$(cd "$(dirname "$doc_path")" && pwd)
