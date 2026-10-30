@@ -13,8 +13,9 @@
 # on screen under an error banner, so the preview doesn't blank out while
 # you type.
 #
-# Aux files (.aux, .toc, .bbl, ...) persist between refreshes in a cache
-# folder, so each refresh is usually a single LaTeX run.
+# Each document builds in a fixed folder under ~/Library/Caches, so aux
+# files (.aux, .toc, .bbl, ...) persist between refreshes and latexmk
+# reruns only what changed: usually a single LaTeX run.
 #
 # A file that is part of a larger document is previewed through its main
 # file: put "% !TEX root = ../main.tex" near the top, or let the filter
@@ -168,7 +169,7 @@ EOF
 # Paths in LaTeX's messages point into the temporary build folder; show
 # them relative to the document instead.
 tidy_paths() {
-    sed -e "s#$work/shadow/##g" -e "s#$work/$job\\.tex#$doc_name#g" -e "s#$work/##g" -e "s#$root_dir/##g"
+    sed -e "s#$build/shadow/##g" -e "s#$build/$job\\.tex#$doc_name#g" -e "s#$build/##g" -e "s#$root_dir/##g"
 }
 
 banner() {  # banner <class> <title> <file with messages>
@@ -225,8 +226,6 @@ if [ -n "$root_path" ]; then
         "$root_dir/"*) rel_dir="${doc_dir#"$root_dir"}"; rel_dir="${rel_dir#/}" ;;
         *) rel_dir="" ;;
     esac
-    mkdir -p "$work/shadow/$rel_dir"
-    cp "$work/buffer.tex" "$work/shadow/$rel_dir/$doc_name"
     source_file="$root_dir/$root_name"
     engine_source=$(magic program "$root_path")
     cache_name="$root_dir/$root_name"
@@ -234,8 +233,6 @@ else
     root_dir="$doc_dir"
     job="${doc_name%.tex}"
     [ -n "$job" ] || job=untitled
-    cp "$work/buffer.tex" "$work/$job.tex"
-    source_file="$work/$job.tex"
     engine_source=$(magic program "$work/buffer.tex")
     # With no known path there is nothing to tell documents apart by, so
     # don't cache: a shared entry would show another file's pages.
@@ -248,7 +245,6 @@ add a line like this near the top so the preview builds the main file:
 % !TEX root = ../main.tex"
     fi
 fi
-mkdir -p "$work/shadow"
 
 engine=$(printf '%s' "${engine_source:-${LATEX_ENGINE:-lualatex}}" | tr '[:upper:]' '[:lower:]')
 case "$engine" in
@@ -259,29 +255,62 @@ command -v "$engine" >/dev/null ||
     fail_page "$engine not found" "Install MacTeX (brew install --cask mactex-no-gui), or set PATH in
 $CONFIG"
 
-# --- Cache ----------------------------------------------------------------
+# --- Build folder -------------------------------------------------------
 
+# Each document builds in its own folder under the cache, at the same path
+# every time. latexmk records the paths of the files it read, so a folder
+# that moved would make it redo everything (Biber and a second LaTeX run)
+# on every refresh; in a fixed folder it reruns only what changed.
 if [ -n "$cache_name" ]; then
     cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
-    build_cache="$cache_root/$cache_key"
+    build="$cache_root/$cache_key"
     last_good="$cache_root/$cache_key.html"
 else
-    build_cache="$work/.no-cache"
-    last_good="$work/.no-cache.html"
+    build="$work/build"
+    last_good="$work/last-good.html"
 fi
-mkdir -p "$build_cache"
+mkdir -p "$build"
 
-# Bring back the aux files from the previous refresh.
-cp -R "$build_cache/." "$work/" 2>/dev/null
+# One refresh at a time per document, in case BBEdit starts another
+# before this one ends. A lock left by a killed run is taken over.
+lock="$build.lock"
+tries=0
+until mkdir "$lock" 2>/dev/null; do
+    if ! kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null || [ $tries -ge 120 ]; then
+        rm -rf "$lock"
+        continue
+    fi
+    sleep 0.5
+    tries=$((tries + 1))
+done
+echo $$ > "$lock/pid"
+trap 'rm -rf "$work" "$lock"' EXIT
+
+# The buffer goes into the build folder. Files are only rewritten when the
+# text changed, which keeps latexmk's view of them unchanged otherwise.
+put() {  # put <file>: copy the buffer there unless it already holds it
+    cmp -s "$work/buffer.tex" "$1" || cp "$work/buffer.tex" "$1"
+}
+# The shadow folder holds only this refresh's buffer, so a chapter
+# previewed earlier can't hide its saved copy from the main file.
+rm -rf "$build/shadow"
+mkdir -p "$build/shadow"
+if [ -n "$root_path" ]; then
+    mkdir -p "$build/shadow/$rel_dir"
+    cp "$work/buffer.tex" "$build/shadow/$rel_dir/$doc_name"
+else
+    source_file="$build/$job.tex"
+    put "$source_file"
+fi
 
 # \include{chapters/intro} writes chapters/intro.aux into the build
 # folder, so the folder layout must exist there.
 (cd "$root_dir" && find . -maxdepth 3 -type d ! -name '.*' 2>/dev/null) |
-    while IFS= read -r d; do mkdir -p "$work/$d"; done
+    while IFS= read -r d; do mkdir -p "$build/$d"; done
 
 # --- Compile ----------------------------------------------------------------
 
-export TEXINPUTS="$work/shadow:${TEXINPUTS:-}"
+export TEXINPUTS="$build/shadow:${TEXINPUTS:-}"
 export BIBINPUTS="$root_dir:${BIBINPUTS:-}"
 export max_print_line=10000   # one message per log line, easier to read
 pretex='\def\bbeditpreview{}'
@@ -295,18 +324,18 @@ if [ "${LATEX_USE_LATEXMK:-yes}" != "no" ] && command -v latexmk >/dev/null; the
     esac
     # shellcheck disable=SC2086
     latexmk $mode -interaction=nonstopmode -halt-on-error -file-line-error \
-        -outdir="$work" -jobname="$job" -usepretex="$pretex" \
+        -outdir="$build" -jobname="$job" -usepretex="$pretex" \
         $LATEX_PREVIEW_ARGS "$source_file" > "$work/stdout" 2>&1 < /dev/null
     status=$?
 else
     # shellcheck disable=SC2086
     "$engine" -interaction=nonstopmode -halt-on-error -file-line-error \
-        -output-directory="$work" -jobname="$job" \
+        -output-directory="$build" -jobname="$job" \
         $LATEX_PREVIEW_ARGS "$pretex\\input{\"$source_file\"}" > "$work/stdout" 2>&1 < /dev/null
     status=$?
 fi
-log="$work/$job.log"
-pdf="$work/$job.pdf"
+log="$build/$job.log"
+pdf="$build/$job.pdf"
 
 # Errors: "file:line: message" (from -file-line-error) or "! message",
 # with the few context lines LaTeX prints after it.
@@ -345,13 +374,16 @@ render_pages() {  # writes $work/body.html from $pdf
             printf '">\n'
         done
     else
+        # pdftocairo writes one page per SVG file, so convert the pages
+        # side by side on all cores.
+        seq 1 "$pages" | xargs -P "$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" -I{} \
+            pdftocairo -svg -f {} -l {} "$pdf" "$work/page-{}.svg"
         i=1
         while [ "$i" -le "$pages" ]; do
-            pdftocairo -svg -f "$i" -l "$i" "$pdf" "$work/page.svg"
             # Pages go in as data-URI images rather than inline <svg> so that
             # element ids in one page's SVG can't collide with another's.
             printf '<img class="page" alt="" src="data:image/svg+xml;base64,'
-            base64 < "$work/page.svg" | tr -d '\n'
+            base64 < "$work/page-$i.svg" | tr -d '\n'
             printf '">\n'
             i=$((i + 1))
         done
@@ -365,21 +397,16 @@ Install it with: brew install poppler"
 fi
 
 if [ $status -eq 0 ] && [ -s "$pdf" ]; then
-    render_pages > "$work/body.html"
-    cp "$work/body.html" "$last_good"
-
-    # Keep the aux files for the next refresh, but not the PDF or pages.
-    rm -rf "$build_cache"
-    mkdir -p "$build_cache"
-    (cd "$work" && find . -type f \( -name '*.aux' -o -name '*.toc' -o -name '*.lof' \
-        -o -name '*.lot' -o -name '*.out' -o -name '*.bbl' -o -name '*.bcf' -o -name '*.blg' \
-        -o -name '*.run.xml' -o -name '*.idx' -o -name '*.ind' -o -name '*.ilg' -o -name '*.nav' \
-        -o -name '*.snm' -o -name '*.fls' -o -name '*.fdb_latexmk' -o -name '*.xdv' \) \
-        ! -path './shadow/*' -print) |
-        while IFS= read -r f; do
-            mkdir -p "$build_cache/$(dirname "$f")"
-            cp "$work/$f" "$build_cache/$f"
-        done
+    # A refresh with nothing new (latexmk had nothing to rerun) reuses the
+    # pages from last time instead of converting them again.
+    stamp="$(cksum < "$pdf") ${LATEX_PREVIEW_FORMAT:-svg} ${LATEX_PREVIEW_DPI:-144}"
+    if [ -f "$last_good" ] && [ "$(cat "$last_good.stamp" 2>/dev/null)" = "$stamp" ]; then
+        cp "$last_good" "$work/body.html"
+    else
+        render_pages > "$work/body.html"
+        cp "$work/body.html" "$last_good"
+        printf '%s\n' "$stamp" > "$last_good.stamp"
+    fi
 
     extract_warnings > "$work/warnings"
     page_header
