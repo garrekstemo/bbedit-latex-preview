@@ -9,12 +9,17 @@
 # page to SVG with poppler's pdftocairo and wrap the pages in a small HTML
 # page.
 #
+# BBEdit waits for the filter before it responds again, so for a saved
+# document the filter prints the last render at once and compiles in a
+# background worker; the page then fetches the new render itself.
+#
 # When the document has an error mid-edit, the last good render is kept
 # on screen under an error banner, so the preview doesn't blank out while
 # you type.
 #
-# Aux files (.aux, .toc, .bbl, ...) persist between refreshes in a cache
-# folder, so each refresh is usually a single LaTeX run.
+# Each document builds in a fixed folder under ~/Library/Caches, so aux
+# files (.aux, .toc, .bbl, ...) persist between refreshes and latexmk
+# reruns only what changed: usually a single LaTeX run.
 #
 # A file that is part of a larger document is previewed through its main
 # file: put "% !TEX root = ../main.tex" near the top, or let the filter
@@ -33,6 +38,8 @@
 #   LATEX_PREVIEW_FORMAT  svg (default, sharp at any zoom) or png (faster for
 #                         long documents)
 #   LATEX_PREVIEW_DPI     resolution for png pages (default 144)
+#   LATEX_PREVIEW_BACKGROUND  "no" to compile inside the filter, which makes
+#                         BBEdit wait for LaTeX on every refresh
 
 CONFIG="$HOME/.config/bbedit-latex-preview/config"
 [ -f "$CONFIG" ] && . "$CONFIG"
@@ -44,8 +51,6 @@ PATH="$PATH:/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/latex-preview.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
-
-cat > "$work/buffer.tex"
 
 cache_root="${XDG_CACHE_HOME:-$HOME/Library/Caches}/bbedit-latex-preview"
 mkdir -p "$cache_root"
@@ -64,7 +69,63 @@ while [ -L "$self" ]; do
         *) self="$(dirname "$self")/$link" ;;
     esac
 done
-docwatch="$(cd "$(dirname "$self")/.." && pwd)/lib/bbedit-docwatch.sh"
+lib="$(cd "$(dirname "$self")/.." && pwd)/lib"
+. "$lib/latex-build.sh"
+
+# take_lock <pid>: one compile at a time per document. The lock is a
+# symlink whose target is the holder's process id; a lock left by a
+# process that died is taken over.
+take_lock() {
+    ln -s "$1" "$lock" 2>/dev/null && return 0
+    kill -0 "$(readlink "$lock")" 2>/dev/null && return 1
+    rm -f "$lock"
+    ln -s "$1" "$lock" 2>/dev/null
+}
+
+# --- Background worker ---------------------------------------------------
+
+# The filter queues the text in $build.next.tex (first line: a sequence
+# number) and starts this worker, which compiles whatever is queued until
+# the queue is empty. Each result is published as two small scripts that
+# the open preview page fetches through bbedit-latex-serve.pl.
+publish() {  # publish <sequence number>
+    out="$cache_root/$cache_key"
+    cp "$work/result.html" "$out.result.html.tmp" && mv "$out.result.html.tmp" "$out.result.html"
+    cp "$work/result.class" "$out.result.class"
+    printf '%s\n' "$1" > "$out.result.seq"
+    {
+        printf 'bbLatexUpdate(%s,"' "$1"
+        perl -0777 -pe 's/\\/\\\\/g; s/"/\\"/g; s/\r/\\r/g; s/\n/\\n/g' "$work/result.html"
+        printf '","%s");\n' "$(cat "$work/result.class")"
+    } > "$out.update.js.tmp" && mv "$out.update.js.tmp" "$out.update.js"
+    printf 'bbLatexState(%s);\n' "$1" > "$out.state.js.tmp" && mv "$out.state.js.tmp" "$out.state.js"
+}
+
+if [ "${1:-}" = --worker ]; then
+    lock="$build.lock"
+    next="$build.next.tex"
+    take_lock $$ || exit 0
+    trap 'rm -rf "$work"; [ "$(readlink "$lock")" = $$ ] && rm -f "$lock"' EXIT
+    while :; do
+        if mv "$next" "$work/queued.tex" 2>/dev/null; then
+            seq=$(head -n 1 "$work/queued.tex")
+            tail -n +2 "$work/queued.tex" > "$work/buffer.tex"
+            build_and_render
+            publish "$seq"
+            cp "$work/buffer.tex" "$build.done.tex"
+            continue
+        fi
+        rm -f "$lock"
+        # Text queued while the lock was being released.
+        [ -f "$next" ] && take_lock $$ && continue
+        break
+    done
+    exit 0
+fi
+
+cat > "$work/buffer.tex"
+
+docwatch="$lib/bbedit-docwatch.sh"
 open_docs="$cache_root/open-documents.txt"
 docwatch_pid="$cache_root/docwatch.pid"
 if [ -x "$docwatch" ] && command -v osascript >/dev/null &&
@@ -72,14 +133,15 @@ if [ -x "$docwatch" ] && command -v osascript >/dev/null &&
     nohup "$docwatch" "$open_docs" "$docwatch_pid" </dev/null >/dev/null 2>&1 &
 fi
 
-doc_path="${BB_DOC_PATH:-}"
-if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
-    best_diff=""
+# closest_file < list of paths: prints the .tex file whose text is closest
+# to the buffer, or nothing.
+closest_file() {
+    best="" best_diff=""
     while IFS= read -r candidate; do
         case "$candidate" in *.tex) ;; *) continue ;; esac
         [ -f "$candidate" ] || continue
         if cmp -s "$work/buffer.tex" "$candidate"; then
-            doc_path="$candidate"
+            best="$candidate"
             break
         fi
         # Skip files that share less than half their lines with the text,
@@ -89,9 +151,32 @@ if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
         [ $((changed * 2)) -le "$total" ] || continue
         if [ -z "$best_diff" ] || [ "$changed" -lt "$best_diff" ]; then
             best_diff="$changed"
-            doc_path="$candidate"
+            best="$candidate"
         fi
-    done < "$open_docs"
+    done
+    printf '%s' "$best"
+}
+
+doc_path="${BB_DOC_PATH:-}"
+if [ -z "$doc_path" ] && [ -f "$open_docs" ]; then
+    doc_path=$(closest_file < "$open_docs")
+fi
+# The helper's list lags a second or more behind BBEdit, and BBEdit can't
+# answer it while a filter runs, so a document that was just opened (or
+# reopened with its preview at launch) isn't on it yet. Ask Spotlight for
+# saved .tex files that contain the buffer's most common long words
+# instead (common words, so a word typed since the last save doesn't
+# rule the saved copy out).
+if [ -z "$doc_path" ] && command -v mdfind >/dev/null; then
+    words=$(sed -e 's/%.*//' -e 's/\\[[:alpha:]]*//g' "$work/buffer.tex" | tr -cs '[:alpha:]' '\n' |
+        awk 'length >= 7 { n[tolower($0)]++ } END { for (w in n) print n[w], w }' |
+        sort -k1,1rn -k2 | head -n 4 | cut -d' ' -f2)
+    if [ -n "$words" ]; then
+        query='kMDItemFSName == "*.tex"c'
+        for w in $words; do query="$query && kMDItemTextContent == \"$w\"cd"; done
+        doc_path=$(mdfind -onlyin "$HOME" "$query" 2>/dev/null |
+            grep -v "^$HOME/Library/" | head -n 20 | closest_file)
+    fi
 fi
 if [ -n "$doc_path" ] && [ -d "$(dirname "$doc_path")" ]; then
     doc_dir=$(cd "$(dirname "$doc_path")" && pwd)
@@ -103,10 +188,6 @@ else
     doc_dir="$work"
     doc_name="untitled.tex"
 fi
-
-escape_html() {
-    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
-}
 
 page_header() {
     cat <<'EOF'
@@ -136,21 +217,11 @@ page_header() {
   .warning { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-border); }
   .stale main { opacity: .55; }
   .empty { padding: 48px 16px; text-align: center; opacity: .6; }
+  #bblatex-status { position: fixed; right: 10px; bottom: 10px; z-index: 2; padding: 3px 9px;
+                    border-radius: 10px; background: var(--fg); color: var(--bg); opacity: .7; font-size: 11px; }
 </style>
 EOF
     printf '<style>.page { width: %s; }</style>\n</head>\n' "${LATEX_PREVIEW_WIDTH:-100%}"
-}
-
-# Paths in LaTeX's messages point into the temporary build folder; show
-# them relative to the document instead.
-tidy_paths() {
-    sed -e "s#$work/shadow/##g" -e "s#$work/$job\\.tex#$doc_name#g" -e "s#$work/##g" -e "s#$root_dir/##g"
-}
-
-banner() {  # banner <class> <title> <file with messages>
-    printf '<div class="banner %s"><strong>%s</strong><pre>' "$1" "$2"
-    tidy_paths < "$3" | escape_html
-    printf '</pre></div>\n'
 }
 
 fail_page() {  # fail_page <title> <message>
@@ -201,8 +272,6 @@ if [ -n "$root_path" ]; then
         "$root_dir/"*) rel_dir="${doc_dir#"$root_dir"}"; rel_dir="${rel_dir#/}" ;;
         *) rel_dir="" ;;
     esac
-    mkdir -p "$work/shadow/$rel_dir"
-    cp "$work/buffer.tex" "$work/shadow/$rel_dir/$doc_name"
     source_file="$root_dir/$root_name"
     engine_source=$(magic program "$root_path")
     cache_name="$root_dir/$root_name"
@@ -210,8 +279,6 @@ else
     root_dir="$doc_dir"
     job="${doc_name%.tex}"
     [ -n "$job" ] || job=untitled
-    cp "$work/buffer.tex" "$work/$job.tex"
-    source_file="$work/$job.tex"
     engine_source=$(magic program "$work/buffer.tex")
     # With no known path there is nothing to tell documents apart by, so
     # don't cache: a shared entry would show another file's pages.
@@ -224,7 +291,6 @@ add a line like this near the top so the preview builds the main file:
 % !TEX root = ../main.tex"
     fi
 fi
-mkdir -p "$work/shadow"
 
 engine=$(printf '%s' "${engine_source:-${LATEX_ENGINE:-lualatex}}" | tr '[:upper:]' '[:lower:]')
 case "$engine" in
@@ -235,153 +301,127 @@ command -v "$engine" >/dev/null ||
     fail_page "$engine not found" "Install MacTeX (brew install --cask mactex-no-gui), or set PATH in
 $CONFIG"
 
-# --- Cache ----------------------------------------------------------------
-
-if [ -n "$cache_name" ]; then
-    cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
-    build_cache="$cache_root/$cache_key"
-    last_good="$cache_root/$cache_key.html"
-else
-    build_cache="$work/.no-cache"
-    last_good="$work/.no-cache.html"
-fi
-mkdir -p "$build_cache"
-
-# Bring back the aux files from the previous refresh.
-cp -R "$build_cache/." "$work/" 2>/dev/null
-
-# \include{chapters/intro} writes chapters/intro.aux into the build
-# folder, so the folder layout must exist there.
-(cd "$root_dir" && find . -maxdepth 3 -type d ! -name '.*' 2>/dev/null) |
-    while IFS= read -r d; do mkdir -p "$work/$d"; done
-
-# --- Compile ----------------------------------------------------------------
-
-export TEXINPUTS="$work/shadow:${TEXINPUTS:-}"
-export BIBINPUTS="$root_dir:${BIBINPUTS:-}"
-export max_print_line=10000   # one message per log line, easier to read
-pretex='\def\bbeditpreview{}'
-
-cd "$root_dir" || exit 1
-if [ "${LATEX_USE_LATEXMK:-yes}" != "no" ] && command -v latexmk >/dev/null; then
-    case "$engine" in
-        pdflatex) mode=-pdf ;;
-        xelatex) mode=-xelatex ;;
-        lualatex) mode=-lualatex ;;
-    esac
-    # shellcheck disable=SC2086
-    latexmk $mode -interaction=nonstopmode -halt-on-error -file-line-error \
-        -outdir="$work" -jobname="$job" -usepretex="$pretex" \
-        $LATEX_PREVIEW_ARGS "$source_file" > "$work/stdout" 2>&1 < /dev/null
-    status=$?
-else
-    # shellcheck disable=SC2086
-    "$engine" -interaction=nonstopmode -halt-on-error -file-line-error \
-        -output-directory="$work" -jobname="$job" \
-        $LATEX_PREVIEW_ARGS "$pretex\\input{\"$source_file\"}" > "$work/stdout" 2>&1 < /dev/null
-    status=$?
-fi
-log="$work/$job.log"
-pdf="$work/$job.pdf"
-
-# Errors: "file:line: message" (from -file-line-error) or "! message",
-# with the few context lines LaTeX prints after it.
-extract_errors() {
-    awk '
-        /==> Fatal error occurred/ || /^Here is how much/ { n = 0; next }
-        /^[^ ]*:[0-9]+: / || /^! / { n = 4; shown++ }
-        n > 0 { print; n--; if ($0 == "") n = 0 }
-        /^\*\*\* \(job aborted/ { print }
-        shown >= 3 && n == 0 { exit }
-    ' "$log" 2>/dev/null
-}
-
-extract_warnings() {
-    awk '
-        /^(LaTeX|Package [^ ]+|Class [^ ]+) Warning:/ && !/^LaTeX Font Warning/ {
-            if (!seen[$0]++) { print; keep = 1 } else keep = 0; next
-        }
-        keep && /^\([^)]*\) / { print; next }
-        { keep = 0 }
-    ' "$log" 2>/dev/null
-}
-
-# --- Render ------------------------------------------------------------------
-
-render_pages() {  # writes $work/body.html from $pdf
-    pages=$(pdfinfo "$pdf" 2>/dev/null | awk '/^Pages:/ { print $2 }')
-    printf '<main>\n'
-    if [ -z "$pages" ] || [ "$pages" -eq 0 ]; then
-        printf '<div class="empty">This document has no pages.</div>\n'
-    elif [ "${LATEX_PREVIEW_FORMAT:-svg}" = png ]; then
-        pdftoppm -png -r "${LATEX_PREVIEW_DPI:-144}" "$pdf" "$work/page"
-        for img in "$work"/page-*.png; do
-            printf '<img class="page" alt="" src="data:image/png;base64,'
-            base64 < "$img" | tr -d '\n'
-            printf '">\n'
-        done
-    else
-        i=1
-        while [ "$i" -le "$pages" ]; do
-            pdftocairo -svg -f "$i" -l "$i" "$pdf" "$work/page.svg"
-            # Pages go in as data-URI images rather than inline <svg> so that
-            # element ids in one page's SVG can't collide with another's.
-            printf '<img class="page" alt="" src="data:image/svg+xml;base64,'
-            base64 < "$work/page.svg" | tr -d '\n'
-            printf '">\n'
-            i=$((i + 1))
-        done
-    fi
-    printf '</main>\n'
-}
-
 if ! command -v pdftocairo >/dev/null || ! command -v pdfinfo >/dev/null; then
     fail_page "poppler not found" "The preview uses poppler to turn PDF pages into images.
 Install it with: brew install poppler"
 fi
 
-if [ $status -eq 0 ] && [ -s "$pdf" ]; then
-    render_pages > "$work/body.html"
-    cp "$work/body.html" "$last_good"
+# --- Build folder -------------------------------------------------------
 
-    # Keep the aux files for the next refresh, but not the PDF or pages.
-    rm -rf "$build_cache"
-    mkdir -p "$build_cache"
-    (cd "$work" && find . -type f \( -name '*.aux' -o -name '*.toc' -o -name '*.lof' \
-        -o -name '*.lot' -o -name '*.out' -o -name '*.bbl' -o -name '*.bcf' -o -name '*.blg' \
-        -o -name '*.run.xml' -o -name '*.idx' -o -name '*.ind' -o -name '*.ilg' -o -name '*.nav' \
-        -o -name '*.snm' -o -name '*.fls' -o -name '*.fdb_latexmk' -o -name '*.xdv' \) \
-        ! -path './shadow/*' -print) |
-        while IFS= read -r f; do
-            mkdir -p "$build_cache/$(dirname "$f")"
-            cp "$work/$f" "$build_cache/$f"
-        done
-
-    extract_warnings > "$work/warnings"
-    page_header
-    printf '<body>\n'
-    if [ -s "$work/warnings" ]; then
-        count=$(grep -c 'Warning:' "$work/warnings")
-        printf '<details class="banner warning"><summary>%s warning%s</summary><pre>' \
-            "$count" "$([ "$count" -eq 1 ] || echo s)"
-        tidy_paths < "$work/warnings" | escape_html
-        printf '</pre></details>\n'
-    fi
-    cat "$work/body.html"
-    printf '</body></html>\n'
+# Each document builds in its own folder under the cache, at the same path
+# every time. latexmk records the paths of the files it read, so a folder
+# that moved would make it redo everything (Biber and a second LaTeX run)
+# on every refresh; in a fixed folder it reruns only what changed.
+base_texinputs="${TEXINPUTS:-}"
+base_bibinputs="${BIBINPUTS:-}"
+if [ -n "$cache_name" ]; then
+    cache_key=$(printf '%s' "$cache_name" | cksum | cut -d' ' -f1)
+    build="$cache_root/$cache_key"
+    last_good="$cache_root/$cache_key.html"
 else
-    extract_errors > "$work/errors"
-    # No LaTeX error in the log (a BibTeX/Biber failure, say): show the
-    # end of the tool's own output instead.
-    [ -s "$work/errors" ] || tail -n 25 "$work/stdout" > "$work/errors"
-    page_header
-    if [ -f "$last_good" ]; then
-        printf '<body class="stale">\n'
-        banner error "LaTeX error (showing last good render)" "$work/errors"
-        cat "$last_good"
-    else
-        printf '<body>\n'
-        banner error "LaTeX error" "$work/errors"
-    fi
-    printf '</body></html>\n'
+    build="$work/build"
+    last_good="$work/last-good.html"
 fi
+mkdir -p "$build"
+lock="$build.lock"
+
+# --- Unsaved documents, or LATEX_PREVIEW_BACKGROUND=no: compile here ------
+
+# BBEdit waits for the filter, and stops responding, until it finishes.
+# An unsaved document has no build folder to come back to, so it is
+# compiled here; it is usually short.
+if [ -z "$cache_name" ] || [ "${LATEX_PREVIEW_BACKGROUND:-yes}" = no ]; then
+    tries=0
+    until take_lock $$; do
+        [ $tries -ge 120 ] && rm -f "$lock"
+        sleep 0.5
+        tries=$((tries + 1))
+    done
+    trap 'rm -rf "$work"; [ "$(readlink "$lock")" = $$ ] && rm -f "$lock"' EXIT
+    build_and_render
+    page_header
+    printf '<body class="%s">\n' "$(cat "$work/result.class")"
+    cat "$work/result.html"
+    printf '</body></html>\n'
+    exit 0
+fi
+
+# --- Saved documents: compile in the background ---------------------------
+
+# The filter returns at once with the last render and leaves the compile
+# to a background worker, so BBEdit keeps responding while LaTeX runs. The
+# page then fetches the new render from bbedit-latex-serve.pl when it is
+# ready.
+out="$cache_root/$cache_key"
+next="$build.next.tex"
+shown=$(cat "$out.result.seq" 2>/dev/null || echo 0)
+want="$shown"
+if ! { [ -f "$out.result.html" ] && cmp -s "$work/buffer.tex" "$build.done.tex" &&
+       [ ! -f "$next" ] && ! kill -0 "$(readlink "$lock" 2>/dev/null)" 2>/dev/null; }; then
+    want=$(( $(cat "$out.queued" 2>/dev/null || echo 0) + 1 ))
+    [ "$want" -gt "$shown" ] || want=$((shown + 1))
+    echo "$want" > "$out.queued"
+    { echo "$want"; cat "$work/buffer.tex"; } > "$next.$$" && mv "$next.$$" "$next"
+    if ! kill -0 "$(readlink "$lock" 2>/dev/null)" 2>/dev/null; then
+        export build last_good root_path rel_dir doc_name root_dir job engine \
+            cache_root cache_key base_texinputs base_bibinputs
+        nohup "$self" --worker </dev/null >/dev/null 2>&1 &
+    fi
+fi
+
+# The helper that serves finished renders to the page.
+server_info="$cache_root/server.txt"
+if [ "$want" -gt "$shown" ] &&
+   ! kill -0 "$(cut -d' ' -f3 "$server_info" 2>/dev/null)" 2>/dev/null; then
+    rm -f "$server_info"
+    nohup /usr/bin/perl "$lib/bbedit-latex-serve.pl" "$cache_root" "$server_info" \
+        </dev/null >/dev/null 2>&1 &
+    i=0
+    while [ ! -f "$server_info" ] && [ $i -lt 20 ]; do sleep 0.05; i=$((i + 1)); done
+fi
+port="" token=""
+[ -f "$server_info" ] && read -r port token _ < "$server_info"
+
+page_header
+printf '<body class="%s">\n<div id="bblatex">\n' "$(cat "$out.result.class" 2>/dev/null)"
+if [ -f "$out.result.html" ]; then
+    cat "$out.result.html"
+else
+    printf '<div class="empty">Compiling\342\200\246</div>\n'
+fi
+printf '</div>\n'
+if [ "$want" -gt "$shown" ] && [ -n "$port" ]; then
+    printf '<div id="bblatex-status">Updating\342\200\246</div>\n'
+    cat <<SCRIPT
+<script>
+(function () {
+  var base = "http://127.0.0.1:$port/$token/$cache_key", shown = $shown, want = $want;
+  var status = document.getElementById("bblatex-status"), polls = 0, timer;
+  function load(url) {
+    var s = document.createElement("script");
+    s.src = url;
+    s.onload = s.onerror = function () { s.remove(); };
+    document.head.appendChild(s);
+  }
+  window.bbLatexState = function (seq) {
+    if (seq > shown) load(base + ".update.js?" + seq);
+  };
+  window.bbLatexUpdate = function (seq, html, cls) {
+    if (seq <= shown) return;
+    shown = seq;
+    var y = window.scrollY;
+    document.getElementById("bblatex").innerHTML = html;
+    document.body.className = cls;
+    window.scrollTo(0, y);
+    if (shown >= want) { status.remove(); clearInterval(timer); }
+  };
+  // Give up after ten minutes, in case the compile was killed.
+  timer = setInterval(function () {
+    if (++polls > 1200) { clearInterval(timer); return; }
+    load(base + ".state.js?" + Date.now());
+  }, 500);
+})();
+</script>
+SCRIPT
+fi
+printf '</body></html>\n'
